@@ -56,6 +56,7 @@ from au2_config import GOAT_VALIDATED_CFG
 from au2_goat_challenge_v3 import GOAT_CHALLENGE_V3_CFG, GOAT_CHALLENGE_V3_OVERLAY
 from au2_bot_live import PaperExecutor, MarketState, Au2QwenBot
 from au2_state_manager import StatePersistence
+from au2_core import REGIME_PROFILES, Regime
 
 load_dotenv()
 log = logging.getLogger("au2_challenge_v3")
@@ -199,6 +200,25 @@ class ChallengeV3Bot(Au2QwenBot):
                 top3 = sorted(rej.items(), key=lambda x: -x[1])[:3]
                 log.info("TOP REJECTIONS | %s",
                          "  |  ".join(f"{r}: {c}" for r, c in top3))
+            # Task 3/4 — FLOW exit metrics + safety warning
+            flow_total = (
+                self.executor._diag["flow_exit_time"] +
+                self.executor._diag["flow_exit_be_fallback"] +
+                self.executor._diag["flow_exit_sl"]
+            )
+            if flow_total > 0:
+                flow_sl_rate   = self.executor._diag["flow_exit_sl"]          / flow_total
+                flow_be_rate   = self.executor._diag["flow_exit_be_fallback"] / flow_total
+                flow_time_rate = self.executor._diag["flow_exit_time"]        / flow_total
+                log.info(
+                    "FLOW | n=%d  time=%.0f%%  be=%.0f%%  sl=%.0f%%",
+                    flow_total, flow_time_rate * 100, flow_be_rate * 100, flow_sl_rate * 100,
+                )
+                if flow_sl_rate > 0.10:
+                    log.warning(
+                        "FLOW SL rate elevated (%.0f%% > 10%%) -- possible market regime issue",
+                        flow_sl_rate * 100,
+                    )
 
     # ── Override run() to inject status_loop task ────────────────────────────
 
@@ -210,6 +230,11 @@ class ChallengeV3Bot(Au2QwenBot):
             format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         )
         _verify_and_print_diff()
+        # Task 2 — startup verification of be_trigger_bps values
+        log.info("[CONFIG] FLOW be_trigger_bps = %.1f",
+                 REGIME_PROFILES[Regime.FLOW].be_trigger_bps)
+        log.info("[CONFIG] CHOP be_trigger_bps = %.1f",
+                 REGIME_PROFILES[Regime.CHOP].be_trigger_bps)
         log.info(
             "GOAT-CHALLENGE-V3 paper bot  |  symbol=%s  equity=$%.0f"
             "  decisions=%s",

@@ -104,20 +104,24 @@ class LiveExecutor:
 
         # ── Diagnostic counters (read-only from outside) ──────────────────────
         self._diag: dict = {
-            "ticks_total":       0,
-            "ticks_in_pos":      0,
-            "ticks_risk_block":  0,
-            "signals_nonflat":   0,
-            "signals_approved":  0,
-            "near_misses":       0,
-            "rejection_counts":  defaultdict(int),
-            "score_count":       0,
-            "score_abs_sum":     0.0,
-            "score_abs_min":     float("inf"),
-            "score_abs_max":     0.0,
-            "score_below_thr":   0,
-            "last_mkt_log_ts":   0.0,
-            "last_mkt_snapshot": {},
+            "ticks_total":          0,
+            "ticks_in_pos":         0,
+            "ticks_risk_block":     0,
+            "signals_nonflat":      0,
+            "signals_approved":     0,
+            "near_misses":          0,
+            "rejection_counts":     defaultdict(int),
+            "score_count":          0,
+            "score_abs_sum":        0.0,
+            "score_abs_min":        float("inf"),
+            "score_abs_max":        0.0,
+            "score_below_thr":      0,
+            "last_mkt_log_ts":      0.0,
+            "last_mkt_snapshot":    {},
+            # FLOW exit counters (Task 3)
+            "flow_exit_time":       0,
+            "flow_exit_be_fallback":0,
+            "flow_exit_sl":         0,
         }
 
     # ── Persistence ──────────────────────────────────────────────────────────
@@ -233,6 +237,14 @@ class LiveExecutor:
                 result = self.builder.build(ts, exit_reason) if self.builder else None
                 pnl_str = f"${result.pnl_usd:.2f}" if result else "n/a"
                 log.info("TRADE CLOSED | PnL=%s | Reason=%s", pnl_str, exit_reason)
+                # FLOW exit counters (Task 3) — no logic change, counters only
+                if result and result.regime == "FLOW":
+                    if exit_reason == "EXIT_TIME":
+                        self._diag["flow_exit_time"] += 1
+                    elif exit_reason == "EXIT_BE_FALLBACK":
+                        self._diag["flow_exit_be_fallback"] += 1
+                    elif exit_reason == "EXIT_SL":
+                        self._diag["flow_exit_sl"] += 1
                 self.state_mgr.save(
                     self.state_mgr.build_checkpoint(
                         self.risk.current_equity, ts,
