@@ -1,0 +1,22 @@
+[Unit]
+Description=AU2QWEN — GOAT Mode Paper Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/bot_au2qwen
+EnvironmentFile=/root/bot_au2qwen/.env
+ExecStart=/root/bot_au2qwen/venv/bin/python /root/bot_au2qwen/runtime/au2_bot_live.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bot_au2qwen_goat
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

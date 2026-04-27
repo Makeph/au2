@@ -1,0 +1,24 @@
+# Data / DB files — large, not versionned
+data/validated/*.db
+data/live/*.jsonl
+data/live/*.json
+data/live/*.log
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+
+# Models / binaries
+models/*.pkl
+models/*.joblib
+*.pkl
+*.joblib
+
+# Env secrets
+.env.local
+
+# OS
+.DS_Store
