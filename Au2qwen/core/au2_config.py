@@ -21,6 +21,7 @@ Architecture notes:
 from __future__ import annotations
 from au2_core import CoreConfig, Regime
 from au2_risk_overlay import RiskOverlayConfig
+from au2_consistency_guard import ConsistencyGuardConfig
 
 
 def build_goat_config() -> CoreConfig:
@@ -69,6 +70,22 @@ def build_goat_config() -> CoreConfig:
 # the transition period; they will be removed once all callers are updated.
 GOAT_VALIDATED_CFG: CoreConfig = build_goat_config()
 GOAT_OVERLAY_CFG: RiskOverlayConfig = RiskOverlayConfig(daily_profit_cap_pct=5.0)
+
+# ── GOAT Pay Later profile ────────────────────────────────────────────────────
+# For prop firm payout challenges: consistency guard active, stop after valid day.
+# Risk params identical to GOAT_VALIDATED_CFG — only guard behavior differs.
+GOAT_PAYLATER_CFG: CoreConfig = build_goat_config()   # same core params
+GOAT_PAYLATER_OVERLAY_CFG: RiskOverlayConfig = RiskOverlayConfig(
+    daily_profit_cap_pct=3.0,   # tighter cap — don't overshoot on any single day
+)
+GOAT_PAYLATER_CONSISTENCY_CFG: ConsistencyGuardConfig = ConsistencyGuardConfig(
+    max_best_day_share       = 0.18,
+    valid_day_min_profit_pct = 0.50,
+    stop_after_valid_day     = True,
+    min_valid_days           = 3,
+    daily_target_pct         = 0.55,
+    enabled                  = True,
+)
 
 # Backward-compat alias — do not use in new code
 GOAT_CFG: CoreConfig = GOAT_VALIDATED_CFG

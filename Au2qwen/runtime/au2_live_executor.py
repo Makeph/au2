@@ -37,6 +37,11 @@ from au2_risk_overlay import RiskOverlay, RiskOverlayConfig
 from au2_state_manager import StatePersistence
 from au2_decision import build_trade_decision, TradeDecisionLog
 from au2_decision_logger import DecisionLogger
+from au2_consistency_guard import ConsistencyGuard, ConsistencyGuardConfig
+try:
+    from au2_telegram import tg as _tg
+except ImportError:
+    _tg = None  # Telegram optional — bot runs fine without it
 
 log = logging.getLogger("au2_live")
 
@@ -49,6 +54,7 @@ class LiveExecutor:
     def __init__(self, cfg: CoreConfig, start_equity: float = 10_000.0,
                  live_mode: bool = False,
                  overlay: Optional[RiskOverlay] = None,
+                 consistency_cfg: Optional[ConsistencyGuardConfig] = None,
                  decision_log_path: Optional[str] = str(
                      pathlib.Path(__file__).resolve().parent.parent / "data" / "live" / "au2_decisions.jsonl"
                  )):
@@ -98,6 +104,10 @@ class LiveExecutor:
             DecisionLogger(decision_log_path) if decision_log_path else None
         )
 
+        # ── Consistency guard (GOAT Pay Later) — disabled by default ─────────
+        # Enable by passing consistency_cfg=GOAT_PAYLATER_CONSISTENCY_CFG
+        self.consistency_guard = ConsistencyGuard(consistency_cfg)
+
         # ── Persistence ───────────────────────────────────────────────────────
         self.state_mgr = StatePersistence()
         self._load_or_init(start_equity)
@@ -137,6 +147,8 @@ class LiveExecutor:
             self.risk.day_start_equity   = saved["equity"]
             self.overlay.current_equity  = saved["equity"]
             self.overlay.day_start_equity = saved["equity"]
+            if saved.get("paylater_state"):
+                self.consistency_guard.load(saved["paylater_state"])
             self._restore_position_from_checkpoint(saved)
         else:
             log.info("Fresh start or expired state.")
@@ -154,6 +166,22 @@ class LiveExecutor:
         except ValueError:
             regime = Regime.TREND
         profile = REGIME_PROFILES[regime]
+
+        # Skip positions older than 2x max_hold — they missed their exit window
+        # and can never close cleanly (no SL/TP fill to trigger pm.update).
+        age = time.time() - float(p.get("entry_ts", 0))
+        if age > profile.max_hold_seconds * 2:
+            log.warning(
+                "[H3] Skipping stale position (age=%.0fs > %.0fs limit) — "
+                "clearing from state.",
+                age, profile.max_hold_seconds * 2,
+            )
+            self.state_mgr.save(self.state_mgr.build_checkpoint(
+                self.risk.current_equity, time.time(),
+                self.risk.consecutive_losses, None, None,
+            ))
+            return
+
         self.pm.pos = PositionState(
             side=p["side"], exec_price=float(p["exec_price"]),
             entry_ts=float(p.get("entry_ts", time.time())),
@@ -169,8 +197,26 @@ class LiveExecutor:
             tp1_done=bool(p.get("tp1_done", False)),
             tp2_done=bool(p.get("tp2_done", False)),
         )
-        log.info("[H3] Position restored from checkpoint: %s %.4f BTC @ %.1f",
-                 p["side"], self.pm.pos.remaining_qty, self.pm.pos.exec_price)
+
+        # Restore TradeBuilder so EXIT_TIME / SL / TP can compute real PnL.
+        # Falls back to constructing from position data if builder_state missing.
+        TradeBuilder = __import__("au2_core", fromlist=["TradeBuilder"]).TradeBuilder
+        b = saved.get("builder_state") or {}
+        self.builder = TradeBuilder(
+            b.get("signal", p["side"]),
+            float(b.get("entry_price", p["exec_price"])),
+            float(b.get("entry_ts",    p.get("entry_ts", time.time()))),
+            float(b.get("score",       p.get("score", self.cfg.threshold))),
+            regime,
+            float(b.get("qty",         p.get("initial_qty", 0.0))),
+            float(b.get("confidence",  p.get("confidence", 0.90))),
+            float(b.get("regime_quality", 1.0)),
+        )
+        if b.get("pnl_so_far"):
+            self.builder._pnl = float(b["pnl_so_far"])
+
+        log.info("[H3] Position restored from checkpoint: %s %.4f BTC @ %.1f (age=%.0fs)",
+                 p["side"], self.pm.pos.remaining_qty, self.pm.pos.exec_price, age)
 
     # ── Async plumbing ────────────────────────────────────────────────────────
 
@@ -208,6 +254,12 @@ class LiveExecutor:
         # ── Daily equity reset ────────────────────────────────────────────────
         day = time.strftime("%Y-%m-%d", time.gmtime(ts))
         if day != self.risk.last_day:
+            # Notify consistency guard of the closing day's PnL before reset
+            if self.risk.last_day:
+                closed_day_pnl = self.risk.current_equity - self.risk.day_start_equity
+                self.consistency_guard.on_day_reset(
+                    self.risk.last_day, closed_day_pnl, self.risk.current_equity
+                )
             self.risk.reset_day(day)
             self.overlay.reset_day()
             log.info("DAY RESET | day=%s equity=$%.2f", day, self.risk.current_equity)
@@ -228,6 +280,7 @@ class LiveExecutor:
                         self.state_mgr.save(self.state_mgr.build_checkpoint(
                             self.risk.current_equity, ts, self.risk.consecutive_losses,
                             self._checkpoint_pos(), self._checkpoint_builder(),
+                            paylater_state=self.consistency_guard.dump(),
                         ))
                     asyncio.create_task(
                         self._safe_exec(lambda fill=h: self._route_fill(fill))
@@ -237,6 +290,15 @@ class LiveExecutor:
                 result = self.builder.build(ts, exit_reason) if self.builder else None
                 pnl_str = f"${result.pnl_usd:.2f}" if result else "n/a"
                 log.info("TRADE CLOSED | PnL=%s | Reason=%s", pnl_str, exit_reason)
+                if _tg and result:
+                    _tg.closed(result.pnl_usd, exit_reason, self.risk.current_equity)
+                # Telegram command handler trade log
+                if result and hasattr(self, "_tg_cmd_ref") and self._tg_cmd_ref:
+                    self._tg_cmd_ref.record_close(
+                        result.pnl_usd, exit_reason,
+                        self.risk.current_equity,
+                        result.regime, result.side,
+                    )
                 # FLOW exit counters (Task 3) — no logic change, counters only
                 if result and result.regime == "FLOW":
                     if exit_reason == "EXIT_TIME":
@@ -249,6 +311,7 @@ class LiveExecutor:
                     self.state_mgr.build_checkpoint(
                         self.risk.current_equity, ts,
                         self.risk.consecutive_losses, None, None,
+                        paylater_state=self.consistency_guard.dump(),
                     )
                 )
                 self.last_trade_ts = ts
@@ -268,6 +331,16 @@ class LiveExecutor:
             self._diag["rejection_counts"][cap_reason]    += 1
             return None
 
+        # Step 1a2 — Pay Later consistency guard --------------------------------
+        today_pnl = self.risk.current_equity - self.risk.day_start_equity
+        cg_blocked, cg_reason = self.consistency_guard.should_block(
+            day, today_pnl, self.risk.current_equity
+        )
+        if cg_blocked:
+            self._diag["ticks_risk_block"]             += 1
+            self._diag["rejection_counts"][cg_reason]  += 1
+            return None
+
         # Step 1b — Risk check -------------------------------------------------
         r_state, r_mult, _ = self.risk.evaluate(ts)
         if not self.risk.can_trade(ts) or r_state == RiskState.RED:
@@ -285,6 +358,17 @@ class LiveExecutor:
         spread  = float(s.get("spread_bps",       0.0) or 0.0)
         trend30 = float(s.get("trend_30s_bps",    0.0) or 0.0)
         range30 = float(s.get("range_30s_bps",    0.0) or 0.0)
+
+        # Step 2b — 30s range floor: block entry in dead markets
+        # A 5s vol burst can pass min_vol_bps even when the market is
+        # structurally flat. If the 30s range is also tiny, the market
+        # has no sustained directionality and every trade is noise.
+        _MIN_RANGE_30S = 5.0  # bps  (normal markets: 10-30 bps)
+        if range30 < _MIN_RANGE_30S:
+            self._diag["rejection_counts"]["dead_market"] = (
+                self._diag["rejection_counts"].get("dead_market", 0) + 1
+            )
+            return None
 
         # Step 3 — Dynamic threshold (mirrors SelectivityEngine in backtest) ---
         day_dd_pct = max(
@@ -453,6 +537,8 @@ class LiveExecutor:
             dlog.signal, dlog.confidence, risk_usd, dlog.adv_final,
             regime_str, dlog.score, qty,
         )
+        if _tg:
+            _tg.entry(dlog.signal, qty, price, regime_str, dlog.score, risk_usd)
         return None
 
     # ── Checkpoint helpers ───────────────────────────────────────────────────

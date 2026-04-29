@@ -1,0 +1,40 @@
+[Unit]
+Description=AU2 GOAT Paper Trading Bot
+Documentation=https://github.com/Makeph/au2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# ── Identity ──────────────────────────────────────────────────────────────────
+# Runs as root to match existing setup.
+# TODO: migrate to a dedicated non-root user (e.g. au2bot) when convenient.
+User=root
+WorkingDirectory=/root/bot_au2qwen
+
+# ── Environment ───────────────────────────────────────────────────────────────
+EnvironmentFile=/root/bot_au2qwen/.env
+# Explicit safety guard — overrides anything in .env
+Environment=LIVE_MODE=false
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+ExecStart=/root/bot_au2qwen/venv/bin/python au2_bot_live.py
+ExecReload=/bin/kill -HUP $MAINPID
+
+# ── Restart policy ────────────────────────────────────────────────────────────
+Restart=always
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# ── Shutdown ──────────────────────────────────────────────────────────────────
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=au2-paper
+
+[Install]
+WantedBy=multi-user.target

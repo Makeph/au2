@@ -17,8 +17,28 @@ models/*.joblib
 *.pkl
 *.joblib
 
-# Env secrets
+# Env secrets — never commit real credentials
+.env
 .env.local
+.env.production
+*.key
+*.pem
+secrets/
+reports/private/
 
 # OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Logs
+logs/
+*.log

@@ -24,14 +24,18 @@ class StatePersistence:
             with open(self.path, 'r') as f: return json.load(f)
         except Exception: return None
 
-    def build_checkpoint(self, equity: float, last_ts: float, loss_streak: int, 
-                         open_pos: Optional[Dict], builder: Optional[Dict]) -> Dict[str, Any]:
-        return {
+    def build_checkpoint(self, equity: float, last_ts: float, loss_streak: int,
+                         open_pos: Optional[Dict], builder: Optional[Dict],
+                         paylater_state: Optional[Dict] = None) -> Dict[str, Any]:
+        cp: Dict[str, Any] = {
             "ts": time.time(),
             "equity": equity,
             "last_trade_ts": last_ts,
             "loss_streak": loss_streak,
             "open_position": open_pos,
             "builder_state": builder,
-            "risk_state": "GREEN"  # placeholder, recalculated on load
+            "risk_state": "GREEN",  # placeholder, recalculated on load
         }
+        if paylater_state is not None:
+            cp["paylater_state"] = paylater_state
+        return cp

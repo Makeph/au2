@@ -1,0 +1,79 @@
+name: Deploy — Paper Bot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual deploy"
+        required: false
+        default: "manual trigger"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: paper   # requires manual approval in GitHub Environments if configured
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify paper-only — no live credentials present
+        run: |
+          # Fail hard if someone accidentally put a live key in the repo
+          if grep -r "live_mode.*=.*True\|LIVE_ENABLED.*=.*true" core/ runtime/ --include="*.py" 2>/dev/null; then
+            echo "❌ live_mode=True detected — aborting deploy"
+            exit 1
+          fi
+          echo "✅ Paper-only verified"
+
+      - name: Deploy core + runtime files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "core/*.py,runtime/*.py"
+          target: "/root/bot_au2qwen/"
+          strip_components: 1   # removes core/ and runtime/ prefix → flat structure
+
+      - name: Restart paper service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            echo "=== Clearing cache ==="
+            rm -rf /root/bot_au2qwen/__pycache__
+
+            echo "=== Verifying import sanity ==="
+            cd /root/bot_au2qwen
+            /root/bot_au2qwen/venv/bin/python -c "
+            from au2_config import GOAT_CFG, GOAT_PAYLATER_CONSISTENCY_CFG
+            from au2_consistency_guard import ConsistencyGuard
+            from au2_live_executor import LiveExecutor
+            print('imports OK')
+            "
+
+            echo "=== Restarting bot_au2qwen_goat ==="
+            systemctl restart bot_au2qwen_goat
+            sleep 3
+
+            echo "=== Service status ==="
+            systemctl is-active bot_au2qwen_goat || (journalctl -u bot_au2qwen_goat -n 20 --no-pager && exit 1)
+            echo "✅ Deploy complete — paper only, live disabled"
+
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          STATUS="${{ job.status }}"
+          SHA="${GITHUB_SHA::7}"
+          MSG="🚀 *Deploy paper* \`${STATUS}\` | commit \`${SHA}\` | branch \`main\` | live_enabled: false"
+          python scripts/notify_telegram.py "$MSG" || true

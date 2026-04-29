@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest
+
+      - name: Run tests
+        run: |
+          if [ -d tests ] && ls tests/test_*.py 1>/dev/null 2>&1; then
+            python -m pytest tests/ -v --tb=short
+          else
+            echo "No tests found — skipping"
+          fi
+
+      - name: Verify no secrets in diff
+        run: |
+          # Fail if diff contains anything that looks like a secret
+          if git diff origin/main...HEAD | grep -qE '(sk-ant|sk-proj|AKIA|api_key\s*=\s*"[^"]{10}|token\s*=\s*"[^"]{10})'; then
+            echo "❌ Possible secret detected in diff — failing CI"
+            exit 1
+          fi
+          echo "✅ No secrets detected"
+
+      - name: Verify live_enabled is false
+        run: |
+          if grep -r "live_enabled.*true\|live_mode.*True" core/ runtime/ --include="*.py" 2>/dev/null | grep -v "# "; then
+            echo "❌ live_enabled=true found in source — failing CI"
+            exit 1
+          fi
+          echo "✅ live_enabled safe"
